@@ -15,12 +15,12 @@
 - [x] Unit tests (short / medium / long docs)
 - [x] Acceptance: reproducible, text preserved, stable IDs
 
-## Phase 1.5 — Related EDU Pairing
-- [ ] MiniLM embeddings
-- [ ] Cosine similarity
-- [ ] Top-K + max-distance selection
-- [ ] Comparison vs adjacent baseline
-- [ ] Acceptance: reproducible pairs, quality measured
+## Phase 1.5 — Related EDU Pairing ✅
+- [x] MiniLM embeddings (primary) + TF-IDF fallback
+- [x] Cosine similarity
+- [x] Top-K + max-distance selection
+- [x] Comparison vs adjacent baseline
+- [x] Acceptance: reproducible pairs, quality measured (coverage stats)
 
 ## Phase 2 — QUD Generation
 - [ ] FLAN-T5-small (configurable)
