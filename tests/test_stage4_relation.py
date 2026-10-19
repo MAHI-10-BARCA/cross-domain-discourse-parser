@@ -41,13 +41,52 @@ def test_labels_inventory():
 
 
 def test_contrast_cue():
+    """Valid: Contrast marker in EDU_j (satellite)."""
     cues = _cue_scores("Apple announced a product.", "However, supply is limited.")
     assert cues["Contrast"] == 1.0
 
 
 def test_result_cue():
+    """Valid: Result marker in EDU_j."""
     cues = _cue_scores("Demand is high.", "Therefore shipments will increase.")
     assert cues["Result"] == 1.0
+
+
+def test_cue_does_not_fire_on_edu_i_only():
+    """
+    P0 regression: a marker only in EDU_i must NOT label the pair via combined-text.
+    "However" in the first EDU should not force Contrast when EDU_j has no cue.
+    """
+    cues = _cue_scores(
+        "However, supply constraints may limit availability.",
+        "Investors reacted positively and shares rose.",
+    )
+    assert cues["Contrast"] == 0.0
+    assert cues["Result"] == 0.0
+    assert cues["Elaboration"] == 0.0
+    assert cues["Explanation"] == 0.0
+
+
+def test_cue_does_not_pollute_unrelated_pair():
+    """
+    Pair of two EDUs with no discourse marker must not inherit Contrast.
+    """
+    cues = _cue_scores(
+        "Apple Inc. reported quarterly revenue that exceeded expectations.",
+        "The company said iPhone sales remained resilient.",
+    )
+    assert cues["Contrast"] == 0.0
+    assert cues["Result"] == 0.0
+    assert cues["Elaboration"] == 0.0
+
+
+def test_valid_contrast_still_detected_on_edu_j():
+    """Positive control: However in EDU_j still yields Contrast."""
+    cues = _cue_scores(
+        "Apple Inc. reported quarterly revenue that exceeded expectations.",
+        "However, services revenue grew more slowly than analysts had forecast.",
+    )
+    assert cues["Contrast"] == 1.0
 
 
 def test_heuristic_contrast():

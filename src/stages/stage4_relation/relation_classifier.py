@@ -97,11 +97,19 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _cue_scores(text_i: str, text_j: str) -> Dict[str, float]:
-    combined = text_i + " " + text_j
+    """Score lexical discourse cues on the EDU that typically carries them.
+
+    Forward cues (Contrast, Result, Explanation, Elaboration) are matched on
+    EDU_j only. Searching the concatenated pair text previously caused a single
+    marker (e.g. "However" in one EDU) to label *every* pair containing that
+    EDU as Contrast/Result/etc.
+
+    Background cues remain on EDU_i (prior / contextual unit).
+    """
     return {
-        "Contrast": 1.0 if CONTRAST_CUES.search(combined) else 0.0,
-        "Result": 1.0 if RESULT_CUES.search(text_j) or RESULT_CUES.search(combined) else 0.0,
-        "Explanation": 1.0 if EXPLANATION_CUES.search(combined) else 0.0,
+        "Contrast": 1.0 if CONTRAST_CUES.search(text_j) else 0.0,
+        "Result": 1.0 if RESULT_CUES.search(text_j) else 0.0,
+        "Explanation": 1.0 if EXPLANATION_CUES.search(text_j) else 0.0,
         "Elaboration": 1.0 if ELABORATION_CUES.search(text_j) else 0.0,
         "Background": 1.0 if BACKGROUND_CUES.search(text_i) else 0.0,
     }
