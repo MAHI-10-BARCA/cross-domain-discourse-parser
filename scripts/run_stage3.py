@@ -4,7 +4,8 @@ Run Phase 1 → 1.5 → 2 → 3: segment, pair, QUD, salience scoring.
 
 Usage:
   python scripts/run_stage3.py
-  python scripts/run_stage3.py --qud-backend template --no-nli
+  python scripts/run_stage3.py --qud-backend template
+  python scripts/run_stage3.py --use-nli   # optional light NLI blend
   python scripts/run_stage3.py --pair-backend minilm --min-sim 0.10
 """
 
@@ -39,7 +40,8 @@ def main():
     parser.add_argument("--min-sim", type=float, default=0.15)
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--qud-backend", default="template", choices=["auto", "t5", "template"])
-    parser.add_argument("--no-nli", action="store_true", help="Use cosine answerability only")
+    parser.add_argument("--use-nli", action="store_true",
+                        help="Lightly blend NLI into answerability (cosine remains primary)")
     parser.add_argument("--cent-weight", type=float, default=0.50)
     parser.add_argument("--ans-weight", type=float, default=0.50)
     parser.add_argument("--output", default=None)
@@ -70,7 +72,7 @@ def main():
     print(f"Stage 2: {len(valid)} valid QUDs (backend={qstats['backend']})")
 
     scorer = SalienceScorer(
-        use_nli=not args.no_nli,
+        use_nli=args.use_nli,  # default False: cosine is primary answerability
         centrality_weight=args.cent_weight,
         answerability_weight=args.ans_weight,
     )
