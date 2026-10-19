@@ -1,0 +1,64 @@
+# Global configuration for discourse parser
+# Do not change model names without documenting the reason.
+
+project:
+  name: "cross-domain-discourse-parser"
+  version: "0.1.0"
+  seed: 42
+
+paths:
+  data_raw: "data/raw"
+  data_processed: "data/processed"
+  data_gold: "data/gold"
+  models: "models"
+  outputs_intermediate: "outputs/intermediate"
+  outputs_trees: "outputs/trees"
+  outputs_logs: "outputs/logs"
+  experiments: "experiments"
+
+# Stage 1 – EDU Segmentation
+stage1:
+  model: "en_core_web_sm"          # spaCy model
+  level: "sentence"                # sentence-level EDUs only
+  preserve_offsets: true
+
+# Stage 1.5 – Related EDU Pairing
+stage1_5:
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  top_k: 3
+  max_distance: 5                  # maximum EDU index distance
+  similarity_threshold: 0.0        # keep all Top-K for now; filter later
+
+# Stage 2 – QUD Generation
+stage2:
+  generator_model: "google/flan-t5-small"
+  max_new_tokens: 64
+  num_beams: 4
+  num_return_sequences: 3
+  temperature: 1.0
+  do_sample: false
+
+# Stage 3 – Salience
+stage3:
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  nli_model: "cross-encoder/nli-MiniLM2-L6-H768"
+  centrality_weight: 0.50
+  answerability_weight: 0.50
+
+# Stage 4 – Relation Classification
+stage4:
+  baseline: "minilm_logreg"
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+
+# Stage 5 – Answer-Fit
+stage5:
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+
+# Stage 6 – Bottom-up Parser
+stage6:
+  merge_strategy: "greedy"
+  min_confidence: 0.0              # accept all for first version
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
