@@ -30,17 +30,31 @@ discourse_parser/
 └── scripts/          # Utility and verification scripts
 ```
 
-## Quick Start (Phase 0)
+## Quick Start
 
 ```bash
-cd discourse_parser
+git clone https://github.com/MAHI-10-BARCA/cross-domain-discourse-parser.git
+cd cross-domain-discourse-parser
+
+# Phase 0 check
 python scripts/verify_phase0.py
-pytest tests/test_phase0_schemas.py -v
+python -m pytest tests/test_phase0_schemas.py -v
+
+# Phase 1 — EDU Segmentation
+python scripts/run_stage1.py --backend fallback
+python -m pytest tests/test_stage1_segmentation.py -v
+```
+
+Optional (for spaCy backend):
+```bash
+pip install spacy
+python -m spacy download en_core_web_sm
+python scripts/run_stage1.py --backend spacy
 ```
 
 ## Pipeline Stages (Approved Architecture)
 
-1. EDU Segmentation (spaCy)
+1. EDU Segmentation (spaCy + fallback) ✅
 1.5 Related EDU Pairing (MiniLM)
 2. QUD Multi-Question Generation (FLAN-T5-small)
 3. Neural Salience Scoring
@@ -48,16 +62,10 @@ pytest tests/test_phase0_schemas.py -v
 5. Answer-Fit Scoring
 6. Bottom-Up Greedy Merging → Discourse Tree
 
-## Hardware Notes
-
-- CPU-only environment (no GPU)
-- ~1.2 GB RAM → keep models small and batch sizes = 1
-- Prefer `all-MiniLM-L6-v2` and `flan-t5-small`
-
 ## Status
 
 - [x] Phase 0: Project setup and schemas
-- [ ] Phase 1: EDU Segmentation
+- [x] Phase 1: EDU Segmentation
 - [ ] Phase 1.5: Related EDU Pairing
 - [ ] Phase 2: QUD Generation
 - [ ] Phase 3: Salience Scoring

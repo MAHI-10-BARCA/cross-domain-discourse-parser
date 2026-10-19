@@ -8,12 +8,12 @@
 - [x] Architecture & schema docs
 - [x] Verification script + unit tests
 
-## Phase 1 — EDU Segmentation
-- [ ] spaCy sentence segmentation
-- [ ] Stable EDU IDs + offsets
-- [ ] JSON output
-- [ ] Unit tests (short / medium / long docs)
-- [ ] Acceptance: reproducible, text preserved, stable IDs
+## Phase 1 — EDU Segmentation ✅
+- [x] spaCy sentence segmentation (primary) + pure-Python fallback
+- [x] Stable EDU IDs + character offsets
+- [x] JSON output
+- [x] Unit tests (short / medium / long docs)
+- [x] Acceptance: reproducible, text preserved, stable IDs
 
 ## Phase 1.5 — Related EDU Pairing
 - [ ] MiniLM embeddings
