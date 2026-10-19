@@ -2,7 +2,7 @@
 Phase 3 — Neural Salience Scoring
 
 A. Semantic centrality (MiniLM vs document/pair context)
-B. Answerability proxy (NLI cross-encoder, cosine fallback)
+B. Answerability proxy (PRIMARY = cosine; NLI optional light blend)
 salience = w_c * centrality + w_a * answerability
 """
 
@@ -92,14 +92,9 @@ def _load_nli(model_name: str = "cross-encoder/nli-deberta-v3-small"):
     global _nli_model, _nli_name
     if _nli_model is not None and _nli_name == model_name:
         return _nli_model
-    candidates = [
-        model_name,
-        "cross-encoder/nli-deberta-v3-small",
-        "cross-encoder/nli-MiniLM2-L6-H768",
-        "cross-encoder/nli-distilroberta-base",
-    ]
-    seen = set()
-    ordered = []
+    candidates = [model_name, "cross-encoder/nli-deberta-v3-small",
+                  "cross-encoder/nli-MiniLM2-L6-H768", "cross-encoder/nli-distilroberta-base"]
+    seen, ordered = set(), []
     for c in candidates:
         if c not in seen:
             seen.add(c)
@@ -117,7 +112,6 @@ def _load_nli(model_name: str = "cross-encoder/nli-deberta-v3-small"):
             return _nli_model
         except Exception as e:
             logger.warning("Could not load %s (%s)", name, e)
-            continue
     return None
 
 
@@ -126,8 +120,7 @@ def answerability_nli(question: str, answer_edu: str, model_name: str) -> Tuple[
     if model is None:
         return -1.0, "unavailable"
     try:
-        pair = [(answer_edu, question)]
-        scores = model.predict(pair)
+        scores = model.predict([(answer_edu, question)])
         s = scores[0]
         if hasattr(s, "__len__") and not isinstance(s, (str, bytes)):
             arr = np.asarray(s, dtype=np.float32)
@@ -153,6 +146,8 @@ def answerability_cosine(question_emb: np.ndarray, answer_emb: np.ndarray) -> fl
 
 
 class SalienceScorer:
+    """Answerability primary = cosine(question, answer EDU). NLI optional light blend."""
+
     def __init__(
         self,
         embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
@@ -160,29 +155,27 @@ class SalienceScorer:
         centrality_weight: float = 0.50,
         answerability_weight: float = 0.50,
         context_mode: str = "pair",
-        use_nli: bool = True,
+        use_nli: bool = False,
+        nli_blend: float = 0.25,
     ):
         self.embedding_model = embedding_model
         self.nli_model = nli_model
+        self.context_mode = context_mode
+        self.use_nli = use_nli
+        self.nli_blend = max(0.0, min(1.0, nli_blend))
         total = centrality_weight + answerability_weight
         if total <= 0:
-            self.centrality_weight = 0.5
-            self.answerability_weight = 0.5
+            self.centrality_weight, self.answerability_weight = 0.5, 0.5
         else:
             self.centrality_weight = centrality_weight / total
             self.answerability_weight = answerability_weight / total
-        self.context_mode = context_mode
-        self.use_nli = use_nli
 
     def score(
-        self,
-        questions: List[QUDQuestion],
-        edus: List[EDU],
+        self, questions: List[QUDQuestion], edus: List[EDU],
         pairs: Optional[List[EDUPair]] = None,
     ) -> Tuple[List[SalienceScore], Dict[str, Any]]:
         edu_map = {e.edu_id: e for e in edus}
         pair_map = {p.pair_id: p for p in (pairs or [])}
-
         q_texts, context_texts, answer_texts, meta = [], [], [], []
 
         for q in questions:
@@ -191,11 +184,9 @@ class SalienceScorer:
             edu_j_id = (q.metadata or {}).get("edu_j_id") or (pair.edu_j_id if pair else None)
             edu_i = edu_map.get(edu_i_id) if edu_i_id else None
             edu_j = edu_map.get(edu_j_id) if edu_j_id else None
-            if edu_i is None or edu_j is None:
-                if pair:
-                    edu_i = edus[pair.edu_i_index] if pair.edu_i_index < len(edus) else None
-                    edu_j = edus[pair.edu_j_index] if pair.edu_j_index < len(edus) else None
-
+            if (edu_i is None or edu_j is None) and pair:
+                edu_i = edus[pair.edu_i_index] if pair.edu_i_index < len(edus) else None
+                edu_j = edus[pair.edu_j_index] if pair.edu_j_index < len(edus) else None
             q_texts.append(q.question_text if q.is_valid else "")
             if self.context_mode == "document":
                 ctx = " ".join(e.text for e in edus)
@@ -205,8 +196,7 @@ class SalienceScorer:
             answer_texts.append(edu_j.text if edu_j else " ")
             meta.append((q, edu_i, edu_j))
 
-        all_texts = q_texts + context_texts + answer_texts
-        embs = _embed_texts(all_texts, self.embedding_model)
+        embs = _embed_texts(q_texts + context_texts + answer_texts, self.embedding_model)
         n = len(questions)
         q_embs, ctx_embs, ans_embs = embs[:n], embs[n:2*n], embs[2*n:3*n]
 
@@ -225,17 +215,20 @@ class SalienceScorer:
             raw_cent = _cosine(q_embs[i], ctx_embs[i])
             centrality = _to_unit_interval(raw_cent)
 
-            ans_score, ans_method = -1.0, "cosine_fallback"
+            cos_ans = answerability_cosine(q_embs[i], ans_embs[i])
+            ans_score, ans_method, nli_raw = cos_ans, "cosine_primary", None
+
             if self.use_nli and edu_j is not None:
-                ans_score, ans_method = answerability_nli(
-                    q.question_text, edu_j.text, self.nli_model
-                )
-            if ans_score < 0:
-                ans_score = answerability_cosine(q_embs[i], ans_embs[i])
-                ans_method = "cosine_fallback"
-                cosine_fallback += 1
+                nli_val, nli_tag = answerability_nli(q.question_text, edu_j.text, self.nli_model)
+                if nli_val >= 0:
+                    nli_raw = nli_val
+                    ans_score = (1.0 - self.nli_blend) * cos_ans + self.nli_blend * nli_val
+                    ans_method = f"cosine_primary+nli_blend({self.nli_blend})"
+                    nli_used += 1
+                else:
+                    cosine_fallback += 1
             else:
-                nli_used += 1
+                cosine_fallback += 1
 
             final = self.centrality_weight * centrality + self.answerability_weight * ans_score
             scores.append(SalienceScore(
@@ -245,6 +238,8 @@ class SalienceScorer:
                 final_score=round(float(final), 6),
                 metadata={
                     "raw_centrality_cosine": round(raw_cent, 6),
+                    "answerability_cosine": round(cos_ans, 6),
+                    "answerability_nli": nli_raw,
                     "answerability_method": ans_method,
                     "centrality_weight": self.centrality_weight,
                     "answerability_weight": self.answerability_weight,
@@ -267,7 +262,7 @@ class SalienceScorer:
             "weights": {"centrality": self.centrality_weight, "answerability": self.answerability_weight},
         }
         logger.info(
-            "Salience: scored %d questions (nli=%d, cosine_fb=%d, mean_final=%.3f)",
+            "Salience: scored %d questions (nli=%d, cosine=%d, mean_final=%.3f)",
             len(valid_scores), nli_used, cosine_fallback, stats["mean_final"],
         )
         return scores, stats
@@ -278,10 +273,7 @@ class SalienceScorer:
         document: Optional[Document] = None,
     ) -> Tuple[List[SalienceScore], Dict[str, Any]]:
         scores, stats = self.score(questions, edus, pairs=pairs)
-        ranked = sorted(
-            [s for s in scores if not s.metadata.get("skipped")],
-            key=lambda s: -s.final_score,
-        )
+        ranked = sorted([s for s in scores if not s.metadata.get("skipped")], key=lambda s: -s.final_score)
         payload = {
             "document": document.to_dict() if document else None,
             "scores": [s.to_dict() for s in scores],
