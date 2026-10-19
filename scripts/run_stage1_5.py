@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Run Phase 1 → 1.5 pipeline: segment then pair EDUs.
+Run Phase 1 → 1.5 pipeline: segment then pair EDUs globally by similarity.
+
+Primary pairing is GLOBAL Top-K (strong semantic relatedness).
+Adjacency is NOT used to force pairs — only as an evaluation baseline.
 
 Usage:
   python scripts/run_stage1_5.py
   python scripts/run_stage1_5.py path/to/document.txt
-  python scripts/run_stage1_5.py --backend tfidf --top-k 3 --max-distance 5
+  python scripts/run_stage1_5.py --backend minilm --top-k 3 --min-sim 0.30
 """
 
 import argparse
@@ -28,20 +31,29 @@ Natural language processing has made remarkable progress. Transformer models cha
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Phase 1.5 — Related EDU Pairing")
+    parser = argparse.ArgumentParser(
+        description="Phase 1.5 — Global related EDU pairing (similarity, not adjacency)"
+    )
     parser.add_argument("input", nargs="?", help="Path to a .txt document")
     parser.add_argument("--doc-id", default="sample_doc")
     parser.add_argument("--domain", default="news")
     parser.add_argument("--seg-backend", default="auto", choices=["auto", "spacy", "fallback"])
     parser.add_argument("--backend", default="auto", choices=["auto", "minilm", "tfidf"],
-                        help="Embedding backend for pairing")
-    parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument("--max-distance", type=int, default=5)
+                        help="Embedding backend")
+    parser.add_argument("--top-k", type=int, default=3,
+                        help="Top-K most similar partners per EDU")
+    parser.add_argument("--min-sim", type=float, default=0.25,
+                        help="Minimum cosine similarity to keep a pair")
+    parser.add_argument("--max-distance", type=int, default=None,
+                        help="Optional distance cap (default: None = global, no limit)")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
     set_seed(42)
-    logger = setup_logger("discourse_parser", log_file=str(ROOT / "outputs" / "logs" / "stage1_5.log"))
+    logger = setup_logger(
+        "discourse_parser",
+        log_file=str(ROOT / "outputs" / "logs" / "stage1_5.log"),
+    )
 
     if args.input:
         text = Path(args.input).read_text(encoding="utf-8")
@@ -53,33 +65,33 @@ def main():
 
     doc = Document(doc_id=doc_id, text=text, domain=args.domain)
 
-    # Stage 1
     segmenter = EDUSegmenter(backend=args.seg_backend)
     edus = segmenter.segment(doc)
     print(f"\nStage 1: {len(edus)} EDUs (backend={segmenter._resolved_backend})")
 
-    # Stage 1.5
     pairer = EDUPairer(
         backend=args.backend,
         top_k=args.top_k,
+        similarity_threshold=args.min_sim,
         max_distance=args.max_distance,
     )
     out_path = args.output or (ROOT / "outputs" / "intermediate" / f"{doc_id}_pairs.json")
     selected, adjacent, stats = pairer.pair_and_save(edus, out_path, document=doc)
 
-    print(f"Stage 1.5 backend : {stats['backend']}")
+    print(f"Strategy          : global_topk (similarity-driven, NOT adjacency-forced)")
+    print(f"Embedding backend : {stats['backend']}")
     print(f"Selected pairs    : {stats['num_selected']}")
-    print(f"Adjacent baseline : {stats['num_adjacent']}")
     print(f"Non-adjacent      : {stats['num_non_adjacent_selected']}")
-    print(f"Adjacent coverage : {stats['adjacent_coverage']}")
-    print(f"Mean sel. sim.    : {stats['mean_selected_similarity']}")
+    print(f"Mean pair distance: {stats['mean_pair_distance']}")
+    print(f"Mean similarity   : {stats['mean_selected_similarity']}")
+    print(f"Adj. baseline     : {stats['num_adjacent_baseline']} (comparison only)")
     print(f"Output            : {out_path}\n")
 
-    print("--- Selected pairs (Top-K + max-distance) ---")
+    print("--- Selected pairs (ranked by similarity) ---")
     for p in selected:
         print(f"  [{p.pair_id}] dist={p.distance} sim={p.similarity:.4f}")
-        print(f"    i={p.edu_i_index}: {edus[p.edu_i_index].text[:60]}...")
-        print(f"    j={p.edu_j_index}: {edus[p.edu_j_index].text[:60]}...")
+        print(f"    i={p.edu_i_index}: {edus[p.edu_i_index].text[:70]}")
+        print(f"    j={p.edu_j_index}: {edus[p.edu_j_index].text[:70]}")
         print()
 
 

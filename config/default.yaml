@@ -22,12 +22,14 @@ stage1:
   level: "sentence"                # sentence-level EDUs only
   preserve_offsets: true
 
-# Stage 1.5 – Related EDU Pairing
+# Stage 1.5 – Related EDU Pairing (GLOBAL similarity, not adjacency-forced)
 stage1_5:
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
-  top_k: 3
-  max_distance: 5                  # maximum EDU index distance
-  similarity_threshold: 0.0        # keep all Top-K for now; filter later
+  strategy: "global_topk"          # primary: rank by similarity across whole doc
+  top_k: 3                         # top-K most similar partners per EDU
+  similarity_threshold: 0.25       # drop weak pairs
+  max_distance: null               # null = no distance limit (global)
+                                   # adjacent baseline kept only for evaluation
 
 # Stage 2 – QUD Generation
 stage2:
