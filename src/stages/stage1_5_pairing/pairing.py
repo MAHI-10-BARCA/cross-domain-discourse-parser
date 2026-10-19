@@ -2,10 +2,12 @@
 Phase 1.5 — Related EDU Pairing
 
 Encode EDUs, compute cosine similarities, and select candidate pairs
-using Top-K and maximum-distance constraints.
+by GLOBAL Top-K similarity (not adjacency-forced).
 
 Primary embedding model: sentence-transformers/all-MiniLM-L6-v2
 Fallback: simple TF-IDF + cosine (for environments without the model)
+
+Adjacency baseline is computed only for evaluation comparison.
 """
 
 from __future__ import annotations
@@ -28,16 +30,11 @@ from data_schemas import Document, EDU, EDUPair, save_json
 logger = logging.getLogger("discourse_parser.stage1_5")
 
 
-# ---------------------------------------------------------------------------
-# Embedding backends
-# ---------------------------------------------------------------------------
-
 _model = None
 _model_name = None
 
 
 def _load_minilm(model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-    """Load sentence-transformers model (lazy, cached)."""
     global _model, _model_name
     if _model is not None and _model_name == model_name:
         return _model
@@ -61,12 +58,7 @@ def embed_minilm(texts: List[str], model_name: str = "sentence-transformers/all-
 
 
 def embed_tfidf(texts: List[str]) -> np.ndarray:
-    """
-    Lightweight TF-IDF fallback (no external model required).
-    Suitable for unit tests and environments without sentence-transformers.
-    """
     from collections import Counter
-
     tokenized = [t.lower().split() for t in texts]
     df: Counter = Counter()
     for toks in tokenized:
@@ -83,7 +75,6 @@ def embed_tfidf(texts: List[str]) -> np.ndarray:
             if w in word2idx:
                 idf = math.log((n_docs + 1) / (df[w] + 1)) + 1.0
                 mat[i, word2idx[w]] = (c / max(len(toks), 1)) * idf
-    # L2 normalize
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-9)
     mat = mat / norms
@@ -91,30 +82,27 @@ def embed_tfidf(texts: List[str]) -> np.ndarray:
 
 
 def cosine_similarity_matrix(embeddings: np.ndarray) -> np.ndarray:
-    """Pairwise cosine similarity. Assumes rows are L2-normalized (or normalizes them)."""
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-9)
     normed = embeddings / norms
     return normed @ normed.T
 
 
-# ---------------------------------------------------------------------------
-# Pair selection strategies
-# ---------------------------------------------------------------------------
-
-def select_pairs_topk_distance(
+def select_pairs_global_topk(
     edus: List[EDU],
     sim_matrix: np.ndarray,
     top_k: int = 3,
-    max_distance: int = 5,
-    similarity_threshold: float = 0.0,
+    similarity_threshold: float = 0.25,
+    max_distance: Optional[int] = None,
 ) -> List[EDUPair]:
     """
-    For each EDU i, consider EDUs j where |i-j| <= max_distance and j > i
-    (undirected pairs, stored with i < j). Keep the top_k highest-similarity
-    partners per EDU, then deduplicate.
+    Primary strategy: select strongly related EDUs by similarity, globally.
 
-    Also produces an adjacent baseline set for comparison (distance == 1).
+    For each EDU i, rank all other EDUs j by cosine similarity and keep
+    the top_k partners above similarity_threshold.
+
+    max_distance is OPTIONAL. Default is None (no distance constraint).
+    Adjacent pairs are NOT preferred — only similarity decides.
     """
     n = len(edus)
     if n < 2:
@@ -128,23 +116,25 @@ def select_pairs_topk_distance(
             if i == j:
                 continue
             dist = abs(i - j)
-            if dist > max_distance:
+            if max_distance is not None and dist > max_distance:
                 continue
-            a, b = (i, j) if i < j else (j, i)
             sim = float(sim_matrix[i, j])
             if sim < similarity_threshold:
                 continue
-            scores.append((b if i < j else a, sim, a, b))
+            a, b = (i, j) if i < j else (j, i)
+            scores.append((sim, a, b))
 
-        scores.sort(key=lambda x: -x[1])
-        for _, sim, a, b in scores[:top_k]:
+        scores.sort(key=lambda x: -x[0])
+        for sim, a, b in scores[:top_k]:
             key = (a, b)
             if key not in candidates or sim > candidates[key]:
                 candidates[key] = sim
 
     pairs: List[EDUPair] = []
     doc_id = edus[0].doc_id
-    for idx, ((i, j), sim) in enumerate(sorted(candidates.items(), key=lambda x: (x[0][0], x[0][1]))):
+    for idx, ((i, j), sim) in enumerate(
+        sorted(candidates.items(), key=lambda x: (-x[1], x[0][0], x[0][1]))
+    ):
         pair = EDUPair(
             pair_id=f"{doc_id}_pair_{idx:03d}",
             doc_id=doc_id,
@@ -156,8 +146,9 @@ def select_pairs_topk_distance(
             similarity=round(sim, 6),
             selected=True,
             metadata={
-                "strategy": "topk_distance",
+                "strategy": "global_topk",
                 "top_k": top_k,
+                "similarity_threshold": similarity_threshold,
                 "max_distance": max_distance,
             },
         )
@@ -167,7 +158,7 @@ def select_pairs_topk_distance(
 
 
 def select_adjacent_baseline(edus: List[EDU], sim_matrix: np.ndarray) -> List[EDUPair]:
-    """Simple adjacent-pair baseline (every consecutive EDU pair)."""
+    """Adjacent-pair baseline — for EVALUATION COMPARISON only. Not primary."""
     pairs = []
     doc_id = edus[0].doc_id if edus else ""
     for i in range(len(edus) - 1):
@@ -187,27 +178,21 @@ def select_adjacent_baseline(edus: List[EDU], sim_matrix: np.ndarray) -> List[ED
     return pairs
 
 
-# ---------------------------------------------------------------------------
-# Main pairer
-# ---------------------------------------------------------------------------
-
 class EDUPairer:
-    """
-    Stage 1.5: Generate candidate related EDU pairs.
-    """
+    """Stage 1.5: global Top-K by similarity (NOT adjacency)."""
 
     def __init__(
         self,
         embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
         top_k: int = 3,
-        max_distance: int = 5,
-        similarity_threshold: float = 0.0,
-        backend: str = "auto",  # "minilm" | "tfidf" | "auto"
+        similarity_threshold: float = 0.25,
+        max_distance: Optional[int] = None,
+        backend: str = "auto",
     ):
         self.embedding_model = embedding_model
         self.top_k = top_k
-        self.max_distance = max_distance
         self.similarity_threshold = similarity_threshold
+        self.max_distance = max_distance
         self.backend = backend
         self._resolved_backend: Optional[str] = None
 
@@ -216,9 +201,6 @@ class EDUPairer:
             return self._resolved_backend
         if self.backend == "tfidf":
             self._resolved_backend = "tfidf"
-        elif self.backend == "minilm":
-            model = _load_minilm(self.embedding_model)
-            self._resolved_backend = "minilm" if model is not None else "tfidf"
         else:
             model = _load_minilm(self.embedding_model)
             self._resolved_backend = "minilm" if model is not None else "tfidf"
@@ -226,48 +208,42 @@ class EDUPairer:
         return self._resolved_backend
 
     def pair(self, edus: List[EDU]) -> Tuple[List[EDUPair], List[EDUPair], Dict[str, Any]]:
-        """
-        Returns
-        -------
-        selected_pairs : List[EDUPair]   (Top-K + max-distance)
-        adjacent_pairs : List[EDUPair]   (baseline)
-        stats          : dict            (coverage metrics)
-        """
         if len(edus) < 2:
-            return [], [], {"num_edus": len(edus), "num_selected": 0, "num_adjacent": 0}
+            return [], [], {"num_edus": len(edus), "num_selected": 0, "num_adjacent_baseline": 0}
 
         backend = self._resolve_backend()
         texts = [e.text for e in edus]
-
-        if backend == "minilm":
-            embeddings = embed_minilm(texts, self.embedding_model)
-        else:
-            embeddings = embed_tfidf(texts)
-
+        embeddings = embed_minilm(texts, self.embedding_model) if backend == "minilm" else embed_tfidf(texts)
         sim_matrix = cosine_similarity_matrix(embeddings)
 
-        selected = select_pairs_topk_distance(
+        selected = select_pairs_global_topk(
             edus, sim_matrix,
             top_k=self.top_k,
-            max_distance=self.max_distance,
             similarity_threshold=self.similarity_threshold,
+            max_distance=self.max_distance,
         )
         adjacent = select_adjacent_baseline(edus, sim_matrix)
 
         adj_keys = {(p.edu_i_index, p.edu_j_index) for p in adjacent}
         sel_keys = {(p.edu_i_index, p.edu_j_index) for p in selected}
-        coverage = len(adj_keys & sel_keys) / max(len(adj_keys), 1)
-
+        overlap = len(adj_keys & sel_keys) / max(len(adj_keys), 1)
         non_adj = [p for p in selected if p.distance > 1]
+        distances = [p.distance for p in selected]
 
         stats = {
             "num_edus": len(edus),
             "num_selected": len(selected),
-            "num_adjacent": len(adjacent),
+            "num_adjacent_baseline": len(adjacent),
             "num_non_adjacent_selected": len(non_adj),
-            "adjacent_coverage": round(coverage, 4),
+            "fraction_selected_that_are_adjacent": round(
+                (len(selected) - len(non_adj)) / max(len(selected), 1), 4
+            ),
+            "adjacent_overlap_with_selected": round(overlap, 4),
+            "mean_pair_distance": round(float(np.mean(distances)) if distances else 0.0, 2),
             "backend": backend,
+            "strategy": "global_topk",
             "top_k": self.top_k,
+            "similarity_threshold": self.similarity_threshold,
             "max_distance": self.max_distance,
             "mean_selected_similarity": round(
                 float(np.mean([p.similarity for p in selected])) if selected else 0.0, 4
@@ -277,8 +253,9 @@ class EDUPairer:
             ),
         }
         logger.info(
-            "Paired %d EDUs → %d selected pairs (%d non-adjacent), adjacent coverage=%.2f",
-            len(edus), len(selected), len(non_adj), coverage,
+            "Paired %d EDUs → %d global pairs (non-adj=%d, mean_dist=%.1f, mean_sim=%.3f)",
+            len(edus), len(selected), len(non_adj),
+            stats["mean_pair_distance"], stats["mean_selected_similarity"],
         )
         return selected, adjacent, stats
 
@@ -304,9 +281,15 @@ class EDUPairer:
 def pair_edus(
     edus: List[EDU],
     top_k: int = 3,
-    max_distance: int = 5,
+    similarity_threshold: float = 0.25,
+    max_distance: Optional[int] = None,
     backend: str = "auto",
 ) -> Tuple[List[EDUPair], List[EDUPair], Dict[str, Any]]:
-    """Convenience function."""
-    pairer = EDUPairer(top_k=top_k, max_distance=max_distance, backend=backend)
+    """Convenience — global Top-K by similarity (no adjacency forcing)."""
+    pairer = EDUPairer(
+        top_k=top_k,
+        similarity_threshold=similarity_threshold,
+        max_distance=max_distance,
+        backend=backend,
+    )
     return pairer.pair(edus)
