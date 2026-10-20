@@ -63,6 +63,8 @@ def _load_minilm(model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
     if _embed_model is not None and _embed_name == model_name:
         return _embed_model
     try:
+        # Import torch first so Windows loads c10.dll before transformers/torchvision.
+        import torch  # noqa: F401
         from sentence_transformers import SentenceTransformer
         logger.info("Loading embedding model for relations: %s", model_name)
         _embed_model = SentenceTransformer(model_name)
@@ -204,10 +206,10 @@ def _features_for_trained(texts_i, texts_j, distances, artifact):
             "Trained relation model expects MiniLM embeddings (1538 features), "
             "but sentence-transformers/torch failed to load. "
             "Common on Windows: torch DLL error (c10.dll). "
-            "Fix torch, then retry. Heuristic backend still works without MiniLM.\n"
-            "Try:\n"
-            "  pip uninstall torch -y\n"
-            "  pip install torch --index-url https://download.pytorch.org/whl/cpu\n"
+            "Fix: close other Python processes, open a NEW cmd window, then:\n"
+            "  pip uninstall torch torchvision -y\n"
+            "  pip install torch==2.10.0 torchvision==0.25.0\n"
+            "Heuristic backend still works without MiniLM."
         )
     embs = np.asarray(
         model.encode(list(texts_i) + list(texts_j), convert_to_numpy=True, show_progress_bar=False),
