@@ -3,12 +3,12 @@ Phase 4 — Relation Classification
 
 Assign a discourse relation label to each related EDU pair.
 
-Label inventory (minimal RST-inspired set):
+Label inventory:
   Elaboration | Explanation | Contrast | Result | Background | Joint | Other
 
 Backends:
   heuristic — lexical cues (P0) + similarity/distance rules
-  trained   — supervised MiniLM/TF-IDF + LogisticRegression on GUM gold
+  trained   — supervised MiniLM + LogisticRegression on GUM gold
 """
 
 from __future__ import annotations
@@ -34,40 +34,25 @@ from data_schemas import Document, EDU, EDUPair, RelationPrediction, save_json
 logger = logging.getLogger("discourse_parser.stage4")
 
 RELATION_LABELS = [
-    "Elaboration",
-    "Explanation",
-    "Contrast",
-    "Result",
-    "Background",
-    "Joint",
-    "Other",
+    "Elaboration", "Explanation", "Contrast", "Result",
+    "Background", "Joint", "Other",
 ]
 
 CONTRAST_CUES = re.compile(
     r"\b(however|but|although|though|yet|nevertheless|nonetheless|"
-    r"on the other hand|in contrast|whereas|while|despite|instead)\b",
-    re.I,
-)
+    r"on the other hand|in contrast|whereas|while|despite|instead)\b", re.I)
 RESULT_CUES = re.compile(
     r"\b(therefore|thus|hence|consequently|as a result|so that|"
-    r"leading to|resulting in|accordingly|for this reason)\b",
-    re.I,
-)
+    r"leading to|resulting in|accordingly|for this reason)\b", re.I)
 EXPLANATION_CUES = re.compile(
     r"\b(because|since|due to|owing to|the reason|explained by|"
-    r"on account of|as a result of)\b",
-    re.I,
-)
+    r"on account of|as a result of)\b", re.I)
 ELABORATION_CUES = re.compile(
     r"\b(for example|for instance|specifically|in particular|"
-    r"namely|such as|including|especially)\b",
-    re.I,
-)
+    r"namely|such as|including|especially)\b", re.I)
 BACKGROUND_CUES = re.compile(
     r"\b(previously|earlier|historically|in the past|background|"
-    r"traditionally|originally)\b",
-    re.I,
-)
+    r"traditionally|originally)\b", re.I)
 
 _embed_model = None
 _embed_name = None
@@ -97,7 +82,6 @@ def _embed_texts(texts: List[str], model_name: str) -> np.ndarray:
         )
     from collections import Counter
     import math
-
     tokenized = [t.lower().split() for t in texts]
     df: Counter = Counter()
     for toks in tokenized:
@@ -137,12 +121,8 @@ def _cue_scores(text_i: str, text_j: str) -> Dict[str, float]:
 
 
 def predict_relation_heuristic(
-    text_i: str,
-    text_j: str,
-    emb_i: np.ndarray,
-    emb_j: np.ndarray,
-    distance: int,
-    pair_similarity: Optional[float] = None,
+    text_i: str, text_j: str, emb_i: np.ndarray, emb_j: np.ndarray,
+    distance: int, pair_similarity: Optional[float] = None,
 ) -> Tuple[str, float, Dict[str, Any]]:
     cues = _cue_scores(text_i, text_j)
     sim = pair_similarity if pair_similarity is not None else _cosine(emb_i, emb_j)
@@ -183,7 +163,6 @@ def _default_model_path() -> Path:
 
 
 def load_trained_artifact(model_path: Optional[str | Path] = None):
-    """Load joblib artifact; raises on missing/corrupt model (no silent fallback)."""
     global _TRAINED_ARTIFACT, _TRAINED_PATH
     path = Path(model_path) if model_path else _default_model_path()
     if _TRAINED_ARTIFACT is not None and _TRAINED_PATH == path:
@@ -200,20 +179,12 @@ def load_trained_artifact(model_path: Optional[str | Path] = None):
         raise RuntimeError(f"Corrupt relation model artifact: {path}")
     _TRAINED_ARTIFACT = art
     _TRAINED_PATH = path
-    logger.info(
-        "Loaded trained relation model from %s (encoder=%s)",
-        path, art.get("encoder_backend"),
-    )
+    logger.info("Loaded trained relation model from %s (encoder=%s)", path, art.get("encoder_backend"))
     return art
 
 
 def _features_for_trained(texts_i, texts_j, distances, artifact):
-    """Build features matching the schema used at training time.
-
-    If the artifact was trained with MiniLM, MiniLM *must* load successfully.
-    Silent fallback to bag-of-words changes the feature dimension and causes
-    LogisticRegression to raise a confusing shape error (e.g. 22 vs 1538).
-    """
+    """Features must match training. MiniLM-trained models require MiniLM at inference."""
     backend = artifact.get("encoder_backend", "minilm")
     dist = np.asarray(distances, dtype=np.float32).reshape(-1, 1)
     dmax = float(dist.max()) if len(dist) else 1.0
@@ -226,7 +197,6 @@ def _features_for_trained(texts_i, texts_j, distances, artifact):
         X_txt = vec.transform(combined).toarray().astype(np.float32)
         return np.hstack([X_txt, dist])
 
-    # minilm path — require the same encoder; do not fall back to TF-IDF
     model_name = artifact.get("encoder_name", "sentence-transformers/all-MiniLM-L6-v2")
     model = _load_minilm(model_name)
     if model is None:
@@ -240,11 +210,7 @@ def _features_for_trained(texts_i, texts_j, distances, artifact):
             "  pip install torch --index-url https://download.pytorch.org/whl/cpu\n"
         )
     embs = np.asarray(
-        model.encode(
-            list(texts_i) + list(texts_j),
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        ),
+        model.encode(list(texts_i) + list(texts_j), convert_to_numpy=True, show_progress_bar=False),
         dtype=np.float32,
     )
     n = len(texts_i)
@@ -258,18 +224,13 @@ def _features_for_trained(texts_i, texts_j, distances, artifact):
     expected = getattr(artifact.get("classifier"), "n_features_in_", None)
     if expected is not None and X.shape[1] != expected:
         raise RuntimeError(
-            f"Feature dimension mismatch: built {X.shape[1]} features but model "
-            f"expects {expected}. Artifact encoder_backend={backend!r}."
+            f"Feature dimension mismatch: built {X.shape[1]} features but model expects {expected}."
         )
     return X
 
 
 class RelationClassifier:
-    """
-    Stage 4 backends:
-      heuristic — P0 cue + similarity (default)
-      trained   — supervised model at models/relation_logreg.joblib
-    """
+    """heuristic (default, P0) | trained (models/relation_logreg.joblib)."""
 
     def __init__(
         self,
@@ -362,9 +323,7 @@ class RelationClassifier:
             ei = edu_map.get(p.edu_i_id)
             ej = edu_map.get(p.edu_j_id)
             if ei is None and p.edu_i_index < len(edus):
-                ei = edus[p.edu_j_index] if False else (
-                    edus[p.edu_i_index] if p.edu_i_index < len(edus) else None
-                )
+                ei = edus[p.edu_i_index]
             if ej is None and p.edu_j_index < len(edus):
                 ej = edus[p.edu_j_index]
             resolved.append((p, ei, ej))
@@ -429,7 +388,6 @@ class RelationClassifier:
 
 
 def classify_relations(
-    pairs: List[EDUPair],
-    edus: List[EDU],
+    pairs: List[EDUPair], edus: List[EDU],
 ) -> Tuple[List[RelationPrediction], Dict[str, Any]]:
     return RelationClassifier().classify(pairs, edus)
