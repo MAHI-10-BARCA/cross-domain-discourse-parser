@@ -23,6 +23,17 @@ from data_schemas import (
 
 logger = logging.getLogger("discourse_parser.stage6")
 
+# Prefer informative discourse relations over generic Joint when scores are close.
+RELATION_TYPE_BONUS = {
+    "Contrast": 0.18,
+    "Result": 0.14,
+    "Explanation": 0.12,
+    "Background": 0.12,
+    "Elaboration": 0.08,
+    "Joint": 0.0,
+    "Other": 0.0,
+}
+
 
 def _pair_key(i: int, j: int) -> Tuple[int, int]:
     return (min(i, j), max(i, j))
@@ -47,7 +58,9 @@ def build_pair_score_table(
         sim_n = max(0.0, min(1.0, sim if sim > 0 else (sim + 1) / 2))
         conf = float(rel.confidence) if rel else 0.3
         label = rel.label if rel else "Other"
-        score = w_sim * sim_n + w_rel * conf
+        type_b = RELATION_TYPE_BONUS.get(label, 0.0)
+        joint_penalty = 0.06 if label == "Joint" else 0.0
+        score = w_sim * sim_n + w_rel * conf + type_b - joint_penalty
         table[key] = {
             "score": score, "similarity": sim, "relation": label,
             "confidence": conf, "pair_id": p.pair_id, "distance": p.distance,
@@ -70,7 +83,11 @@ def score_span_merge(
             info = pair_table.get(_pair_key(i, j))
             if not info:
                 continue
-            bonus = 0.05 if (i == L1 and j == R0) else 0.0
+            boundary = (i == L1 and j == R0)
+            bonus = 0.08 if boundary else 0.0
+            lab = info.get("relation", "Other")
+            if boundary and lab in ("Contrast", "Result", "Explanation", "Background", "Elaboration"):
+                bonus += 0.10
             s = info["score"] + bonus
             if s > best_score:
                 best_score = s
