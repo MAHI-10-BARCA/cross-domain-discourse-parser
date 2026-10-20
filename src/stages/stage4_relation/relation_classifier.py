@@ -208,6 +208,12 @@ def load_trained_artifact(model_path: Optional[str | Path] = None):
 
 
 def _features_for_trained(texts_i, texts_j, distances, artifact):
+    """Build features matching the schema used at training time.
+
+    If the artifact was trained with MiniLM, MiniLM *must* load successfully.
+    Silent fallback to bag-of-words changes the feature dimension and causes
+    LogisticRegression to raise a confusing shape error (e.g. 22 vs 1538).
+    """
     backend = artifact.get("encoder_backend", "minilm")
     dist = np.asarray(distances, dtype=np.float32).reshape(-1, 1)
     dmax = float(dist.max()) if len(dist) else 1.0
@@ -219,8 +225,28 @@ def _features_for_trained(texts_i, texts_j, distances, artifact):
         combined = [a + " [SEP] " + b for a, b in zip(texts_i, texts_j)]
         X_txt = vec.transform(combined).toarray().astype(np.float32)
         return np.hstack([X_txt, dist])
+
+    # minilm path — require the same encoder; do not fall back to TF-IDF
     model_name = artifact.get("encoder_name", "sentence-transformers/all-MiniLM-L6-v2")
-    embs = _embed_texts(list(texts_i) + list(texts_j), model_name)
+    model = _load_minilm(model_name)
+    if model is None:
+        raise RuntimeError(
+            "Trained relation model expects MiniLM embeddings (1538 features), "
+            "but sentence-transformers/torch failed to load. "
+            "Common on Windows: torch DLL error (c10.dll). "
+            "Fix torch, then retry. Heuristic backend still works without MiniLM.\n"
+            "Try:\n"
+            "  pip uninstall torch -y\n"
+            "  pip install torch --index-url https://download.pytorch.org/whl/cpu\n"
+        )
+    embs = np.asarray(
+        model.encode(
+            list(texts_i) + list(texts_j),
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        ),
+        dtype=np.float32,
+    )
     n = len(texts_i)
     emb_i, emb_j = embs[:n], embs[n:]
     diff = np.abs(emb_i - emb_j)
@@ -228,7 +254,14 @@ def _features_for_trained(texts_i, texts_j, distances, artifact):
     ni = np.linalg.norm(emb_i, axis=1, keepdims=True)
     nj = np.linalg.norm(emb_j, axis=1, keepdims=True)
     cos = (emb_i * emb_j).sum(axis=1, keepdims=True) / np.maximum(ni * nj, 1e-9)
-    return np.concatenate([emb_i, emb_j, diff, prod, cos, dist], axis=1)
+    X = np.concatenate([emb_i, emb_j, diff, prod, cos, dist], axis=1)
+    expected = getattr(artifact.get("classifier"), "n_features_in_", None)
+    if expected is not None and X.shape[1] != expected:
+        raise RuntimeError(
+            f"Feature dimension mismatch: built {X.shape[1]} features but model "
+            f"expects {expected}. Artifact encoder_backend={backend!r}."
+        )
+    return X
 
 
 class RelationClassifier:
@@ -329,7 +362,9 @@ class RelationClassifier:
             ei = edu_map.get(p.edu_i_id)
             ej = edu_map.get(p.edu_j_id)
             if ei is None and p.edu_i_index < len(edus):
-                ei = edus[p.edu_i_index]
+                ei = edus[p.edu_j_index] if False else (
+                    edus[p.edu_i_index] if p.edu_i_index < len(edus) else None
+                )
             if ej is None and p.edu_j_index < len(edus):
                 ej = edus[p.edu_j_index]
             resolved.append((p, ei, ej))
