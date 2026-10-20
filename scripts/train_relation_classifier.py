@@ -4,7 +4,7 @@ Train MiniLM + LogisticRegression discourse relation classifier on GUM gold.
 
 Usage:
   python scripts\\train_relation_classifier.py
-  python scripts\\train_relation_classifier.py --gold data\\gold\\gum_v12_relations.jsonl
+  python scripts\\train_relation_classifier.py --holdout-genres news
 """
 
 from __future__ import annotations
@@ -76,6 +76,7 @@ def embed_pairs(rows, model_name="sentence-transformers/all-MiniLM-L6-v2", vecto
     dist = np.array([[abs(r["edu_i_index"] - r["edu_j_index"])] for r in rows], dtype=np.float32)
     dist = dist / (dist.max() + 1e-9)
     try:
+        import torch  # noqa: F401
         from sentence_transformers import SentenceTransformer
         model = SentenceTransformer(model_name)
         emb_i = np.asarray(model.encode(texts_i, batch_size=64, show_progress_bar=True, convert_to_numpy=True), dtype=np.float32)
@@ -126,41 +127,83 @@ def main():
     ap.add_argument("--out-dir", default=str(ROOT / "models"))
     ap.add_argument("--model-name", default="sentence-transformers/all-MiniLM-L6-v2")
     ap.add_argument("--max-train", type=int, default=None)
+    ap.add_argument(
+        "--holdout-genres",
+        default=None,
+        help="P5: comma-separated genres held out as test (e.g. news,whow)",
+    )
     args = ap.parse_args()
+
     gold_path = Path(args.gold)
     if not gold_path.exists():
         print(f"ERROR: gold file missing: {gold_path}")
         sys.exit(1)
+
     rows = load_jsonl(gold_path)
     print(f"Loaded {len(rows)} gold examples from {gold_path}")
-    splits, split_meta = document_level_split(rows, seed=SEED)
+
+    if args.holdout_genres:
+        hold = {g.strip().lower() for g in args.holdout_genres.split(",") if g.strip()}
+        test_rows = [r for r in rows if str(r.get("genre", "")).lower() in hold]
+        train_pool = [r for r in rows if str(r.get("genre", "")).lower() not in hold]
+        if not test_rows or not train_pool:
+            print(f"ERROR: holdout-genres={hold} left empty train or test.")
+            sys.exit(1)
+        splits_pool, meta_pool = document_level_split(train_pool, seed=SEED, train_r=0.85, val_r=0.15)
+        splits = {
+            "train": splits_pool["train"],
+            "val": splits_pool["val"] + splits_pool["test"],
+            "test": test_rows,
+        }
+        split_meta = {
+            **meta_pool,
+            "holdout_genres": sorted(hold),
+            "n_examples": {k: len(v) for k, v in splits.items()},
+            "n_docs_test": len({r["doc_id"] for r in test_rows}),
+            "test_docs": sorted({r["doc_id"] for r in test_rows}),
+            "label_dist": {k: dict(Counter(r["coarse_label"] for r in v)) for k, v in splits.items()},
+        }
+        print(f"P5 genre hold-out test genres={sorted(hold)} n_test={len(test_rows)}")
+    else:
+        splits, split_meta = document_level_split(rows, seed=SEED)
+
     print("Split:", split_meta["n_examples"])
-    print("Docs train/val/test:", split_meta["n_docs_train"], split_meta["n_docs_val"], split_meta["n_docs_test"])
     train_rows = splits["train"]
     if args.max_train:
         train_rows = train_rows[: args.max_train]
-    print("Embedding train\u2026")
+
+    print("Embedding train…")
     X_train, vectorizer, enc_backend = embed_pairs(train_rows, args.model_name, fit=True)
     y_train = labels_to_y(train_rows)
     print(f"Encoder backend: {enc_backend}; X_train shape={X_train.shape}")
-    print("Embedding val\u2026")
+    print("Embedding val…")
     X_val, _, _ = embed_pairs(splits["val"], args.model_name, vectorizer=vectorizer, fit=False)
     y_val = labels_to_y(splits["val"])
-    print("Embedding test\u2026")
+    print("Embedding test…")
     X_test, _, _ = embed_pairs(splits["test"], args.model_name, vectorizer=vectorizer, fit=False)
     y_test = labels_to_y(splits["test"])
+
     from sklearn.linear_model import LogisticRegression
-    clf = LogisticRegression(max_iter=1000, solver="lbfgs", class_weight="balanced", random_state=SEED, C=1.0)
-    print("Fitting LogisticRegression\u2026")
+    clf = LogisticRegression(
+        max_iter=1000, solver="lbfgs", class_weight="balanced", random_state=SEED, C=1.0,
+    )
+    print("Fitting LogisticRegression…")
     clf.fit(X_train, y_train)
+
     val_report = evaluate(clf, X_val, y_val)
     test_report = evaluate(clf, X_test, y_test)
-    print("VAL  accuracy={:.4f} macro_f1={:.4f} weighted_f1={:.4f}".format(val_report["accuracy"], val_report["macro_f1"], val_report["weighted_f1"]))
-    print("TEST accuracy={:.4f} macro_f1={:.4f} weighted_f1={:.4f}".format(test_report["accuracy"], test_report["macro_f1"], test_report["weighted_f1"]))
+    print("VAL  accuracy={:.4f} macro_f1={:.4f} weighted_f1={:.4f}".format(
+        val_report["accuracy"], val_report["macro_f1"], val_report["weighted_f1"]))
+    print("TEST accuracy={:.4f} macro_f1={:.4f} weighted_f1={:.4f}".format(
+        test_report["accuracy"], test_report["macro_f1"], test_report["weighted_f1"]))
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     import joblib
-    feature_schema = ["emb_i", "emb_j", "abs_diff", "product", "cosine", "norm_distance"] if enc_backend == "minilm" else ["tfidf_pair", "norm_distance"]
+    feature_schema = (
+        ["emb_i", "emb_j", "abs_diff", "product", "cosine", "norm_distance"]
+        if enc_backend == "minilm" else ["tfidf_pair", "norm_distance"]
+    )
     artifact = {
         "classifier": clf,
         "vectorizer": vectorizer,
@@ -171,19 +214,45 @@ def main():
         "mapping_version": MAPPING_VERSION,
         "corpus": "GUM-V12.1.0",
         "seed": SEED,
-        "split_meta": {k: split_meta[k] for k in ("seed", "n_docs_total", "n_docs_train", "n_docs_val", "n_docs_test", "n_examples", "label_dist")},
-        "hyperparams": {"model": "LogisticRegression", "max_iter": 1000, "solver": "lbfgs", "class_weight": "balanced", "C": 1.0, "random_state": SEED, "encoder_backend": enc_backend},
-        "val_metrics": {"accuracy": val_report["accuracy"], "macro_f1": val_report["macro_f1"], "weighted_f1": val_report["weighted_f1"]},
-        "test_metrics": {"accuracy": test_report["accuracy"], "macro_f1": test_report["macro_f1"], "weighted_f1": test_report["weighted_f1"]},
+        "split_meta": {k: split_meta.get(k) for k in (
+            "seed", "n_docs_total", "n_docs_train", "n_docs_val", "n_docs_test",
+            "n_examples", "label_dist", "holdout_genres",
+        ) if k in split_meta or k == "holdout_genres"},
+        "hyperparams": {
+            "model": "LogisticRegression", "max_iter": 1000, "solver": "lbfgs",
+            "class_weight": "balanced", "C": 1.0, "random_state": SEED,
+            "encoder_backend": enc_backend,
+        },
+        "val_metrics": {
+            "accuracy": val_report["accuracy"],
+            "macro_f1": val_report["macro_f1"],
+            "weighted_f1": val_report["weighted_f1"],
+        },
+        "test_metrics": {
+            "accuracy": test_report["accuracy"],
+            "macro_f1": test_report["macro_f1"],
+            "weighted_f1": test_report["weighted_f1"],
+        },
     }
     model_path = out_dir / "relation_logreg.joblib"
     joblib.dump(artifact, model_path)
-    print(f"Saved model \u2192 {model_path}")
+    print(f"Saved model → {model_path}")
+
     eval_path = out_dir / "relation_eval.json"
-    eval_path.write_text(json.dumps({"val": val_report, "test": test_report, "split_meta": split_meta, "mapping_version": MAPPING_VERSION}, indent=2), encoding="utf-8")
-    print(f"Saved eval \u2192 {eval_path}")
-    split_path = ROOT / "data" / "gold" / "gum_v12_splits.json"
-    split_path.write_text(json.dumps({"train_docs": split_meta["train_docs"], "val_docs": split_meta["val_docs"], "test_docs": split_meta["test_docs"], "seed": SEED}, indent=2), encoding="utf-8")
+    eval_path.write_text(
+        json.dumps({
+            "val": val_report,
+            "test": test_report,
+            "split_meta": {
+                k: split_meta[k] for k in split_meta
+                if k not in ("train_docs", "val_docs", "test_docs")
+            },
+            "mapping_version": MAPPING_VERSION,
+            "holdout_genres": split_meta.get("holdout_genres"),
+        }, indent=2),
+        encoding="utf-8",
+    )
+    print(f"Saved eval → {eval_path}")
 
 
 if __name__ == "__main__":
