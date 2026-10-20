@@ -4,7 +4,7 @@ Run Phase 1 → 1.5 → 4: segment, pair, classify relations.
 
 Usage:
   python scripts/run_stage4.py
-  python scripts/run_stage4.py --pair-backend minilm --min-sim 0.10
+  python scripts/run_stage4.py --pair-backend minilm --min-sim 0.10 --relation-backend trained
 """
 
 import argparse
@@ -36,6 +36,11 @@ def main():
     parser.add_argument("--pair-backend", default="auto", choices=["auto", "minilm", "tfidf"])
     parser.add_argument("--min-sim", type=float, default=0.15)
     parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument(
+        "--relation-backend",
+        default="heuristic",
+        choices=["heuristic", "trained"],
+    )
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
@@ -59,11 +64,11 @@ def main():
     ).pair(edus)
     print(f"Stage 1.5: {len(selected)} pairs (backend={pstats['backend']})")
 
-    clf = RelationClassifier()
+    clf = RelationClassifier(backend=args.relation_backend)
     out = args.output or (ROOT / "outputs" / "intermediate" / f"{doc_id}_relations.json")
     results, stats = clf.classify_and_save(selected, edus, out, document=doc)
 
-    print(f"Stage 4: {stats['num_pairs']} relations")
+    print(f"Stage 4: {stats['num_pairs']} relations (backend={args.relation_backend})")
     print(f"  Labels : {stats['label_counts']}")
     print(f"  Mean conf: {stats['mean_confidence']}")
     print(f"  Output : {out}\n")
