@@ -1,53 +1,43 @@
-# Remaining priorities status (post-P0 / P1)
+# Priority status — FYP baseline complete
 
 Project: Enhancing Cross-Domain Document Discourse Parsing Through Bottom-Up Learning
 
-## Completed earlier
+## Completed (baseline)
+
 | ID | Item | Status |
 |----|------|--------|
-| P0 | Cue-scope fix (forward cues on EDU_j) | Done |
-| P1 | GUM gold + trained MiniLM LogReg + dual backend | Done (model on disk) |
+| **P0** | Cue-scope fix | **Done** |
+| **P1** | GUM trained MiniLM LogReg + dual backend | **Done** |
+| **P1b** | Heuristic vs trained on GUM gold test (5853 pairs) | **Done** |
+| **P1c** | Pipeline `--relation-backend trained` (news sample) | **Done** |
+| **P6** | Design note: global pairs vs adjacent merges | **Done** |
+| **P7** | Experiment log + documentation | **Done** |
 
-## This delivery
+## Optional extras (not required for baseline claim)
 
-| ID | Item | Deliverable | Status |
-|----|------|-------------|--------|
-| **P1b** | Heuristic vs trained on GUM gold test | `scripts/compare_relation_backends.py` | Code ready; run on Windows with gold + model |
-| **P1c** | Pipeline `--relation-backend` | `pipeline.py`, `run_pipeline.py`, `run_stage4.py` | Done |
-| **P2** | FLAN-T5 QUD backend | Already in `qud_generator.py` (`backend=t5|auto|template`) | Implemented; default remains `template` for CPU reliability |
-| **P3** | NLI answerability path | Already in `salience.py` (`use_nli=True`); CLI `--use-nli` | Optional; cosine remains primary |
-| **P4** | Gold attachment-style metrics | `pair_attachment_metrics` in evaluation + pair F1 in P1b | Pair-level only; full tree UAS not claimed |
-| **P5** | Genre hold-out training | `train_relation_classifier.py --holdout-genres` | Code support (retrain locally) |
-| **P6** | Pairs vs merges design note | `docs/design_pairs_vs_merges.md` | Done |
-| **P7** | Limitations + experiment log | this file + `experiments/experiment_log.md` | Done |
+| ID | Item | Status |
+|----|------|--------|
+| **P2** | FLAN-T5 QUD default | Code ready; default stays **template** |
+| **P3** | NLI primary answerability | Code ready; **cosine** is primary |
+| **P4** | Full tree UAS on gold trees | **Not done** (pair F1 only) |
+| **P5** | Genre hold-out retrain metrics | Flag only; optional retrain |
 
-## Honest limitations
-- Pair classification F1 ≠ discourse tree quality.
-- Three sample .txt files do not prove cross-domain generalization.
-- Template QUD is not FLAN-T5 unless `--qud-backend t5` and model loads.
-- NLI is optional and may fail on Windows; cosine answerability is the reliable default.
-- Stage 6 remains adjacent-span greedy.
+## Official model accuracy (use in report)
 
-## Windows commands
+**Task:** coarse 7-class discourse relation classification on GUM V12 gold pairs  
+**Split:** document-level test (seed=42), **n = 5853 pairs**
 
-```bat
-cd E:\Final_year\cross-domain-discourse-parser
-git pull
+| Model | Accuracy | Macro-F1 | Weighted-F1 |
+|-------|----------|----------|-------------|
+| Heuristic baseline | 0.3147 (31.5%) | 0.2209 | 0.2400 |
+| **Trained (MiniLM + LogReg)** | **0.4329 (43.3%)** | **0.3520** | **0.4567** |
 
-:: P1b
-python scripts\compare_relation_backends.py
+Trained outperforms heuristic on all three metrics.
 
-:: P1c sample with trained relations
-python scripts\run_pipeline.py data\raw\news_reuters_sample.txt --relation-backend trained --skip-qud --pair-backend minilm --min-sim 0.10
+Source: `outputs/evaluation/p1b_backend_compare.json`
 
-:: P2 optional (heavy)
-python scripts\run_stage2.py --qud-backend t5
-
-:: P3 optional
-python scripts\run_stage3.py --use-nli
-
-:: P5 genre hold-out example (retrain)
-python scripts\train_relation_classifier.py --holdout-genres news,whow
-```
-
-Record real numbers only in `experiments/experiment_log.md`.
+## Limitations (report honestly)
+- These are **pair-level** metrics, not full discourse-tree attachment scores.
+- Do not claim cross-domain generalization from three sample documents.
+- Stage 6 trees use adjacent-span greedy merges (see `design_pairs_vs_merges.md`).
+- News sample with trained backend was Joint-heavy (expected class bias), not a gold tree score.
