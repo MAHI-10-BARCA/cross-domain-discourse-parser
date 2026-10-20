@@ -5,7 +5,7 @@ End-to-end discourse parsing pipeline.
 Usage:
   python scripts/run_pipeline.py
   python scripts/run_pipeline.py data/raw/news_reuters_sample.txt --domain news
-  python scripts/run_pipeline.py data/raw/ --pair-backend minilm --min-sim 0.10
+  python scripts/run_pipeline.py data/raw/ --pair-backend minilm --min-sim 0.10 --relation-backend trained
 """
 
 import argparse
@@ -38,7 +38,14 @@ def main():
     parser.add_argument("--pair-backend", default="auto")
     parser.add_argument("--min-sim", type=float, default=0.12)
     parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument("--qud-backend", default="template")
+    parser.add_argument("--qud-backend", default="template", choices=["template", "t5", "auto"])
+    parser.add_argument(
+        "--relation-backend",
+        default="heuristic",
+        choices=["heuristic", "trained"],
+        help="Stage 4: heuristic (default) or trained GUM MiniLM LogReg",
+    )
+    parser.add_argument("--use-nli", action="store_true", help="Stage 3 optional NLI answerability")
     parser.add_argument("--skip-qud", action="store_true")
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
@@ -77,6 +84,8 @@ def main():
         min_sim=args.min_sim,
         top_k=args.top_k,
         qud_backend=args.qud_backend,
+        relation_backend=args.relation_backend,
+        use_nli=args.use_nli,
         run_qud=not args.skip_qud,
         run_salience=not args.skip_qud,
         run_answer_fit=not args.skip_qud,
