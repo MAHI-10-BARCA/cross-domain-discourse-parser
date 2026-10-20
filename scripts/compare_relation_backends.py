@@ -7,7 +7,7 @@ Does NOT invent metrics; writes real numbers to outputs/evaluation/.
 
 Usage (Windows CMD):
   python scripts\\compare_relation_backends.py
-  python scripts\\compare_relation_backends.py --gold data\\gold\\gum_v12_relations.jsonl
+  python scripts\\compare_relation_backends.py --max-test-docs 5
 """
 
 from __future__ import annotations
@@ -17,6 +17,12 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+
+# Windows: load torch BEFORE other native libs to avoid c10.dll WinError 1114
+try:
+    import torch  # noqa: F401
+except Exception as _torch_err:
+    print(f"WARNING: torch import failed at startup: {_torch_err}")
 
 import numpy as np
 
@@ -78,6 +84,29 @@ def rows_to_edus_pairs(rows):
         clf_t = RelationClassifier(backend="trained")
     except Exception as e:
         print(f"ERROR loading trained model: {e}")
+        print("Ensure models\\relation_logreg.joblib exists and MiniLM/torch work.")
+        sys.exit(1)
+
+    # Fail fast: probe MiniLM once before looping all docs
+    try:
+        _probe_edus = [
+            EDU("probe0", "probe", "Sales rose.", 0, 0, 11),
+            EDU("probe1", "probe", "However profits fell.", 1, 12, 33),
+        ]
+        _probe_pairs = [EDUPair("probe_p", "probe", "probe0", "probe1", 0, 1, 1, 0.4)]
+        clf_t.classify(_probe_pairs, _probe_edus)
+        print("MiniLM + trained backend OK (probe pair classified).")
+    except Exception as e:
+        print("FATAL: trained backend cannot load MiniLM embeddings.")
+        print(str(e))
+        print(
+            "\nFix (NEW cmd window, close other Python processes):\n"
+            "  pip uninstall torch torchvision -y\n"
+            "  pip install torch==2.10.0 torchvision==0.25.0\n"
+            "  python -c \"import torch; from sentence_transformers import SentenceTransformer; "
+            "print(torch.__version__); print(SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2').encode(['ok']).shape)\"\n"
+            "Then re-run this script."
+        )
         sys.exit(1)
 
     for doc_id, doc_rows in by_doc.items():
@@ -107,18 +136,15 @@ def rows_to_edus_pairs(rows):
             golds.append(r["coarse_label"])
 
         pred_h, _ = clf_h.classify(pairs, edus)
-        try:
-            pred_t, _ = clf_t.classify(pairs, edus)
-        except Exception as e:
-            stats["trained_errors"] += 1
-            print(f"  trained failed on {doc_id}: {e}")
-            continue
+        pred_t, _ = clf_t.classify(pairs, edus)
 
         all_gold.extend(golds)
         all_pred_h.extend([p.label for p in pred_h])
         all_pred_t.extend([p.label for p in pred_t])
         stats["n_docs"] += 1
         stats["n_pairs"] += len(pairs)
+        if stats["n_docs"] % 5 == 0:
+            print(f"  … processed {stats['n_docs']} docs / {stats['n_pairs']} pairs")
 
     return all_gold, all_pred_h, all_pred_t, stats
 
