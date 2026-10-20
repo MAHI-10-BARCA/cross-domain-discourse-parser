@@ -1,14 +1,10 @@
 """
 Phase 4 — Relation Classification
 
-Assign a discourse relation label to each related EDU pair.
-
-Label inventory:
-  Elaboration | Explanation | Contrast | Result | Background | Joint | Other
-
 Backends:
   heuristic — lexical cues (P0) + similarity/distance rules
-  trained   — supervised MiniLM + LogisticRegression on GUM gold
+  trained   — supervised MiniLM classifier on GUM gold
+  hybrid    — strong cues override Joint-heavy trained labels
 """
 
 from __future__ import annotations
@@ -63,7 +59,6 @@ def _load_minilm(model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
     if _embed_model is not None and _embed_name == model_name:
         return _embed_model
     try:
-        # Import torch first so Windows loads c10.dll before transformers/torchvision.
         import torch  # noqa: F401
         from sentence_transformers import SentenceTransformer
         logger.info("Loading embedding model for relations: %s", model_name)
@@ -112,7 +107,6 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _cue_scores(text_i: str, text_j: str) -> Dict[str, float]:
-    """Forward cues on EDU_j only (P0); Background on EDU_i."""
     return {
         "Contrast": 1.0 if CONTRAST_CUES.search(text_j) else 0.0,
         "Result": 1.0 if RESULT_CUES.search(text_j) else 0.0,
@@ -186,7 +180,6 @@ def load_trained_artifact(model_path: Optional[str | Path] = None):
 
 
 def _features_for_trained(texts_i, texts_j, distances, artifact):
-    """Features must match training. MiniLM-trained models require MiniLM at inference."""
     backend = artifact.get("encoder_backend", "minilm")
     dist = np.asarray(distances, dtype=np.float32).reshape(-1, 1)
     dmax = float(dist.max()) if len(dist) else 1.0
@@ -204,12 +197,7 @@ def _features_for_trained(texts_i, texts_j, distances, artifact):
     if model is None:
         raise RuntimeError(
             "Trained relation model expects MiniLM embeddings (1538 features), "
-            "but sentence-transformers/torch failed to load. "
-            "Common on Windows: torch DLL error (c10.dll). "
-            "Fix: close other Python processes, open a NEW cmd window, then:\n"
-            "  pip uninstall torch torchvision -y\n"
-            "  pip install torch==2.10.0 torchvision==0.25.0\n"
-            "Heuristic backend still works without MiniLM."
+            "but sentence-transformers/torch failed to load. Fix torch, then retry."
         )
     embs = np.asarray(
         model.encode(list(texts_i) + list(texts_j), convert_to_numpy=True, show_progress_bar=False),
@@ -232,7 +220,7 @@ def _features_for_trained(texts_i, texts_j, distances, artifact):
 
 
 class RelationClassifier:
-    """heuristic (default, P0) | trained (models/relation_logreg.joblib)."""
+    """heuristic | trained | hybrid."""
 
     def __init__(
         self,
@@ -244,8 +232,13 @@ class RelationClassifier:
         self.backend = backend
         self.model_path = model_path
         self._artifact = None
-        if backend == "trained":
-            self._artifact = load_trained_artifact(model_path)
+        if backend in ("trained", "hybrid"):
+            try:
+                self._artifact = load_trained_artifact(model_path)
+            except Exception as e:
+                if backend == "trained":
+                    raise
+                logger.warning("Hybrid: could not preload trained model (%s)", e)
 
     def classify(
         self, pairs: List[EDUPair], edus: List[EDU],
@@ -254,7 +247,27 @@ class RelationClassifier:
             return [], {"num_pairs": 0, "label_counts": {}, "backend": self.backend}
         if self.backend == "trained":
             return self._classify_trained(pairs, edus)
+        if self.backend == "hybrid":
+            return self._classify_hybrid(pairs, edus)
         return self._classify_heuristic(pairs, edus)
+
+    def _classify_hybrid(
+        self, pairs: List[EDUPair], edus: List[EDU],
+    ) -> Tuple[List[RelationPrediction], Dict[str, Any]]:
+        from stages.stage4_relation.hybrid_backend import merge_heuristic_and_trained
+        heur, hstats = self._classify_heuristic(pairs, edus)
+        try:
+            trained, tstats = self._classify_trained(pairs, edus)
+        except Exception as e:
+            logger.warning("Hybrid: trained failed (%s); using heuristic only.", e)
+            return heur, {**hstats, "backend": "hybrid_heuristic_only"}
+        out, stats = merge_heuristic_and_trained(heur, trained)
+        stats["trained_backend"] = tstats.get("backend")
+        logger.info(
+            "Relation classification (hybrid): %d pairs → %s",
+            len(out), stats.get("label_counts"),
+        )
+        return out, stats
 
     def _classify_heuristic(
         self, pairs: List[EDUPair], edus: List[EDU],
