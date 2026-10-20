@@ -5,7 +5,7 @@ End-to-end discourse parsing pipeline.
 Usage:
   python scripts/run_pipeline.py
   python scripts/run_pipeline.py data/raw/news_reuters_sample.txt --domain news
-  python scripts/run_pipeline.py data/raw/ --pair-backend minilm --min-sim 0.10 --relation-backend trained
+  python scripts/run_pipeline.py data/raw/ --pair-backend minilm --min-sim 0.10 --relation-backend hybrid
 """
 
 import argparse
@@ -41,11 +41,11 @@ def main():
     parser.add_argument("--qud-backend", default="template", choices=["template", "t5", "auto"])
     parser.add_argument(
         "--relation-backend",
-        default="heuristic",
-        choices=["heuristic", "trained"],
-        help="Stage 4: heuristic (default) or trained GUM MiniLM LogReg",
+        default="hybrid",
+        choices=["heuristic", "trained", "hybrid"],
+        help="Stage 4: hybrid (cues+trained), trained, or heuristic",
     )
-    parser.add_argument("--use-nli", action="store_true", help="Stage 3 optional NLI answerability")
+    parser.add_argument("--use-nli", action="store_true")
     parser.add_argument("--skip-qud", action="store_true")
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
